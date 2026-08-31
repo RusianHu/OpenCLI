@@ -8,6 +8,9 @@ const DOUBAO_COMPOSER_SELECTORS = [
     // data-testid attributes were removed. Placeholder is e.g.
     // "发消息或按住空格说话...", class contains semi-input-textarea.
     'textarea.semi-input-textarea',
+    // 2026-08 refactor: the /chat/ new-thread page composer is now a tiptap
+    // ProseMirror rich editor (contenteditable div, no textarea).
+    'div.tiptap.ProseMirror',
     'textarea[placeholder*="发消息"]',
     'textarea[data-testid="chat_input_input"]',
     '[data-testid="chat_input"] textarea',
@@ -708,6 +711,20 @@ export async function getDoubaoTranscriptLines(page) {
     await ensureDoubaoChatPage(page);
     return await page.evaluate(getTranscriptLinesScript());
 }
+function syntheticEnterSubmitScript() {
+    return `
+    (() => {
+      ${buildDoubaoComposerLocatorScript()}
+      const composer = findComposer();
+      if (!(composer instanceof HTMLElement)) return false;
+      composer.focus();
+      const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true, view: window };
+      composer.dispatchEvent(new KeyboardEvent('keydown', opts));
+      composer.dispatchEvent(new KeyboardEvent('keypress', opts));
+      composer.dispatchEvent(new KeyboardEvent('keyup', opts));
+      return true;
+    })()`;
+}
 export async function sendDoubaoMessage(page, text) {
     await ensureDoubaoChatPage(page);
     const normalizeComposerText = (value) => value.replace(/\r\n/g, '\n').trim();
@@ -739,16 +756,27 @@ export async function sendDoubaoMessage(page, text) {
     if (clicked) {
         submittedBy = 'button';
     }
-    else if (page.nativeKeyPress) {
-        try {
-            await page.nativeKeyPress('Enter');
+    else {
+        // 2026-08 refactor: the new composer's send control is a div.send-btn-wrapper
+        // without button/[role=button] semantics, so clickSendButtonScript cannot find
+        // it, and CDP-level keys (nativeKeyPress/pressKey) do not reach the tiptap
+        // keymap. Dispatching a synthetic KeyboardEvent('Enter') on the editor is
+        // verified to submit on the live site (2026-08-31).
+        const dispatched = await page.evaluate(syntheticEnterSubmitScript()).catch(() => false);
+        if (dispatched) {
+            submittedBy = 'synthetic-enter';
         }
-        catch {
+        else if (page.nativeKeyPress) {
+            try {
+                await page.nativeKeyPress('Enter');
+            }
+            catch {
+                await page.pressKey('Enter');
+            }
+        }
+        else {
             await page.pressKey('Enter');
         }
-    }
-    else {
-        await page.pressKey('Enter');
     }
     await page.wait(0.8);
     const verification = await page.evaluate(detectDoubaoVerificationScript());
@@ -948,15 +976,32 @@ export async function navigateToConversation(page, conversationId) {
 export async function getConversationDetail(page, conversationId) {
     await navigateToConversation(page, conversationId);
     // 2026-07 Doubao DOM refactor: getConversationDetailScript's data-testid
-    // selectors are all stale; reuse the fixed getDoubaoVisibleTurns (getTurnsScript,
-    // based on list_items/inner-item/md-box-root) instead.
-    const turns = await getDoubaoVisibleTurns(page);
-    const messages = turns.map((t) => ({
-        Role: t.Role,
-        Text: t.Text,
-        HasMeetingCard: false,
+    // selectors are all stale. Prefer the legacy script first (it still works
+    // wherever the old UI is served and preserves meeting info); only fall back
+    // to the fixed getDoubaoVisibleTurns (getTurnsScript, based on
+    // list_items/inner-item/md-box-root) when it returns no messages.
+    let raw = null;
+    try {
+        raw = await page.evaluate(getConversationDetailScript());
+    }
+    catch {
+        raw = null;
+    }
+    if (!Array.isArray(raw?.messages) || raw.messages.length === 0) {
+        const turns = await getDoubaoVisibleTurns(page);
+        const messages = turns.map((t) => ({
+            Role: t.Role,
+            Text: t.Text,
+            HasMeetingCard: false,
+        }));
+        return { messages, meeting: null };
+    }
+    const messages = raw.messages.map((m) => ({
+        Role: m.role,
+        Text: m.text,
+        HasMeetingCard: m.hasMeetingCard,
     }));
-    return { messages, meeting: null };
+    return { messages, meeting: raw?.meeting ?? null };
 }
 // ---------------------------------------------------------------------------
 // Meeting minutes panel helpers
@@ -1184,6 +1229,7 @@ export const __test__ = {
     detectDoubaoVerificationScript,
     getTurnsScript,
     getTranscriptLinesScript,
+    syntheticEnterSubmitScript,
 };
 export async function startNewDoubaoChat(page) {
     await ensureDoubaoChatPage(page);

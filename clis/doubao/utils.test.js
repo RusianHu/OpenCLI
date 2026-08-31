@@ -1,9 +1,11 @@
 import { JSDOM } from 'jsdom';
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 import { CommandExecutionError } from '@jackwener/opencli/errors';
 import {
     __test__,
     collectDoubaoTranscriptAdditions,
+    getConversationDetail,
     mergeTranscriptSnapshots,
     parseDoubaoConversationId,
     sendDoubaoMessage,
@@ -93,7 +95,7 @@ describe('doubao send strategy', () => {
         const result = await sendDoubaoMessage(page, '你好');
         expect(result).toBe('button');
     });
-    it('falls back to native Enter when no clickable submit button is found', async () => {
+    it('falls back to native Enter when neither a clickable button nor the synthetic composer submit is available', async () => {
         const page = createPageMock();
         const evaluate = vi.mocked(page.evaluate);
         const nativeKeyPress = vi.mocked(page.nativeKeyPress);
@@ -102,6 +104,7 @@ describe('doubao send strategy', () => {
             .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ hasText: true, text: '你好' })
             .mockResolvedValueOnce({ hasText: true, text: '你好' })
+            .mockResolvedValueOnce(false)
             .mockResolvedValueOnce(false)
             .mockResolvedValueOnce({ detected: false });
         const result = await sendDoubaoMessage(page, '你好');
@@ -392,5 +395,88 @@ describe('mergeTranscriptSnapshots', () => {
     it('keeps both windows when a virtualized panel returns adjacent chunks without full history', () => {
         const merged = mergeTranscriptSnapshots('Alice 00:00\nHello team\nBob 00:05\nHi', 'Alice 00:10\nNext topic\nBob 00:15\nAction items');
         expect(merged).toBe('Alice 00:00\nHello team\nBob 00:05\nHi\nAlice 00:10\nNext topic\nBob 00:15\nAction items');
+    });
+});
+
+describe('doubao 2026-08 ProseMirror composer submit', () => {
+    function runSyntheticEnterScript(html) {
+        const dom = new JSDOM(html, { url: 'https://www.doubao.com/chat', runScripts: 'outside-only' });
+        dom.window.HTMLElement.prototype.getBoundingClientRect = () => ({
+            width: 100,
+            height: 24,
+            top: 0,
+            left: 0,
+            right: 100,
+            bottom: 24,
+            x: 0,
+            y: 0,
+            toJSON: () => ({}),
+        });
+        return dom.window.eval(__test__.syntheticEnterSubmitScript());
+    }
+
+    it('dispatches synthetic Enter on the tiptap ProseMirror editor used by the 2026-08 composer', () => {
+        const html = fs.readFileSync(new URL('__fixtures__/composer-2026-08-prosemirror.html', import.meta.url), 'utf8');
+        expect(runSyntheticEnterScript(`<div>${html}</div>`)).toBe(true);
+    });
+
+    it('reports no composer when the page has no editable element', () => {
+        expect(runSyntheticEnterScript('<div><p>plain text</p></div>')).toBe(false);
+    });
+
+    it('submits via synthetic Enter when the new composer has no clickable send button', async () => {
+        const page = createPageMock();
+        const evaluate = vi.mocked(page.evaluate);
+        const nativeKeyPress = vi.mocked(page.nativeKeyPress);
+        evaluate
+            .mockResolvedValueOnce('https://www.doubao.com/chat')
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ hasText: true, text: '你好' })
+            .mockResolvedValueOnce({ hasText: true, text: '你好' })
+            .mockResolvedValueOnce(false)
+            .mockResolvedValueOnce(true)
+            .mockResolvedValueOnce({ detected: false });
+        const result = await sendDoubaoMessage(page, '你好');
+        expect(result).toBe('synthetic-enter');
+        expect(nativeKeyPress).not.toHaveBeenCalled();
+    });
+});
+
+describe('doubao detail legacy-first fallback', () => {
+    function createDetailPageMock(rawSequence) {
+        const page = createPageMock();
+        const evaluate = vi.mocked(page.evaluate);
+        let nonHrefCalls = 0;
+        evaluate.mockImplementation(async (arg) => {
+            if (typeof arg === 'string' && arg.includes('location.href')) {
+                return 'https://www.doubao.com/chat/1234567890123';
+            }
+            const value = rawSequence[Math.min(nonHrefCalls, rawSequence.length - 1)];
+            nonHrefCalls += 1;
+            return value;
+        });
+        return { page };
+    }
+
+    it('keeps legacy messages and meeting info when the legacy detail script still works', async () => {
+        const { page } = createDetailPageMock([
+            { messages: [{ role: 'User', text: 'hi', hasMeetingCard: false }], meeting: { Title: 'meeting' } },
+        ]);
+        const detail = await getConversationDetail(page, '1234567890123');
+        expect(detail.messages).toEqual([{ Role: 'User', Text: 'hi', HasMeetingCard: false }]);
+        expect(detail.meeting).toEqual({ Title: 'meeting' });
+    });
+
+    it('falls back to visible turns with meeting:null when the legacy script returns nothing', async () => {
+        const { page } = createDetailPageMock([
+            null,
+            [{ Role: 'User', Text: 'hi' }, { Role: 'Assistant', Text: 'hello' }],
+        ]);
+        const detail = await getConversationDetail(page, '1234567890123');
+        expect(detail.messages).toEqual([
+            { Role: 'User', Text: 'hi', HasMeetingCard: false },
+            { Role: 'Assistant', Text: 'hello', HasMeetingCard: false },
+        ]);
+        expect(detail.meeting).toBeNull();
     });
 });
