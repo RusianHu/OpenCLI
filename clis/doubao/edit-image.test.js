@@ -220,16 +220,31 @@ describe('edit-image command flow', () => {
 
     it('fails fast with a command error when Doubao injects a captcha challenge', async () => {
         prepare();
+        // Drive the poll deadline with fake time: the mocked page.wait resolves
+        // instantly, so a real-clock loop would spin hot for the whole timeout.
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
         const page = createPageMock();
+        vi.mocked(page.wait).mockImplementation(async (seconds) => {
+            vi.setSystemTime(Date.now() + (seconds || 0) * 1000);
+        });
         vi.mocked(page.evaluate)
             .mockResolvedValueOnce('https://www.doubao.com/chat')
             .mockResolvedValueOnce('div.tiptap.ProseMirror')
             .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ dispatched: true })
             .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
-            .mockResolvedValueOnce({ urls: [], busy: false, fail: false })
-            .mockResolvedValueOnce({ detected: true, reason: 'iframe[src*="captcha"]' });
+            .mockImplementation(async (script) => {
+                if (typeof script === 'string' && script.includes('rc_gen_image')) {
+                    return { urls: [], busy: false, fail: false };
+                }
+                if (typeof script === 'string' && script.includes('captcha')) {
+                    return { detected: true, reason: 'iframe[src*="captcha"]' };
+                }
+                return null;
+            });
         await expect(editImageCommand.func(page, { prompt: '画一只橘猫', out: outDir, timeout: 60 }))
             .rejects.toThrow(/verification challenge/);
+        vi.useRealTimers();
     });
 });
