@@ -212,8 +212,24 @@ describe('edit-image command flow', () => {
             .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ dispatched: true })
             .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
-            .mockResolvedValueOnce({ urls: [], busy: false, fail: true });
+            .mockResolvedValueOnce({ urls: [], busy: false, fail: true })
+            .mockResolvedValueOnce({ detected: false });
         await expect(editImageCommand.func(page, { prompt: '画一只橘猫', out: outDir, timeout: 60 }))
             .rejects.toBeInstanceOf(TimeoutError);
+    });
+
+    it('fails fast with a command error when Doubao injects a captcha challenge', async () => {
+        prepare();
+        const page = createPageMock();
+        vi.mocked(page.evaluate)
+            .mockResolvedValueOnce('https://www.doubao.com/chat')
+            .mockResolvedValueOnce('div.tiptap.ProseMirror')
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ dispatched: true })
+            .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
+            .mockResolvedValueOnce({ urls: [], busy: false, fail: false })
+            .mockResolvedValueOnce({ detected: true, reason: 'iframe[src*="captcha"]' });
+        await expect(editImageCommand.func(page, { prompt: '画一只橘猫', out: outDir, timeout: 60 }))
+            .rejects.toThrow(/verification challenge/);
     });
 });

@@ -1,6 +1,6 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { ArgumentError, CommandExecutionError, TimeoutError } from '@jackwener/opencli/errors';
-import { DOUBAO_DOMAIN, DOUBAO_CHAT_URL, ensureDoubaoChatPage } from './utils.js';
+import { DOUBAO_DOMAIN, DOUBAO_CHAT_URL, detectDoubaoVerificationScript, ensureDoubaoChatPage } from './utils.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -147,6 +147,17 @@ export const editImageCommand = cli({
             throw new ArgumentError('--timeout must be an integer >= 30 (seconds)');
         }
 
+        // Risk control: Doubao may inject a captcha iframe after bursts of
+        // automated requests; surface it immediately instead of timing out.
+        const assertNoVerification = async () => {
+            const verification = await page.evaluate(detectDoubaoVerificationScript()).catch(() => null);
+            if (verification?.detected) {
+                throw new CommandExecutionError('Doubao blocked the request with a verification challenge', verification.reason
+                    ? `Detected challenge signal: ${verification.reason}`
+                    : 'Please complete the challenge in the browser and try again.');
+            }
+        };
+
         // 1. Fresh conversation page
         await ensureDoubaoChatPage(page);
         await page.goto(DOUBAO_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
@@ -188,6 +199,7 @@ export const editImageCommand = cli({
             if (state?.conversationId) conversationId = state.conversationId;
         }
         if (!conversationId) {
+            await assertNoVerification();
             throw new CommandExecutionError('Prompt was not submitted (no conversation created). Doubao may show a verification challenge or the composer changed again.');
         }
 
@@ -221,6 +233,7 @@ export const editImageCommand = cli({
             await page.wait(2.5);
         }
         if (!urls.length) {
+            await assertNoVerification();
             throw new TimeoutError(failReason || `No generated image within ${timeout}s. Conversation: ${conversationUrl}`);
         }
 

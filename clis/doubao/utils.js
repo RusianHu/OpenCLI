@@ -428,7 +428,7 @@ function fillComposerScript(text) {
     })(${JSON.stringify(text)})
   `;
 }
-function detectDoubaoVerificationScript() {
+export function detectDoubaoVerificationScript() {
     return `
     (() => {
       const isVisible = (el) => {
