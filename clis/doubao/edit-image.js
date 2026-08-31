@@ -86,7 +86,9 @@ const SUBMIT_SCRIPT = `
 
 const SUBMIT_STATE_SCRIPT = `
     (() => {
-      const match = location.pathname.match(/\\/chat\\/(\\d{6,})/);
+      // 2026-09: new conversations may use local_ prefixed ids (/chat/local_<digits>)
+      // alongside the legacy numeric ids.
+      const match = location.pathname.match(/\\/chat\\/((?:local_)?\\d{6,})/);
       const pm = document.querySelector('div.tiptap.ProseMirror');
       const ta = document.querySelector('textarea.semi-input-textarea');
       const text = pm ? pm.innerText : (ta ? ta.value : '');

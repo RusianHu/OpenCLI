@@ -89,6 +89,12 @@ describe('edit-image submit state script', () => {
         expect(state.composerLength).toBe(0);
     });
 
+    it('captures the 2026-09 local_ prefixed conversation ids', () => {
+        const html = '<div class="tiptap ProseMirror" contenteditable="true"><p><br></p></div>';
+        const state = runInDom(html, __test__.SUBMIT_STATE_SCRIPT, 'https://www.doubao.com/chat/local_1408157205142109');
+        expect(state.conversationId).toBe('local_1408157205142109');
+    });
+
     it('returns no conversation id on the landing page', () => {
         const html = '<div class="tiptap ProseMirror" contenteditable="true"><p>把背景改成粉色</p></div>';
         const state = runInDom(html, __test__.SUBMIT_STATE_SCRIPT);
