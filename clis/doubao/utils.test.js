@@ -480,3 +480,42 @@ describe('doubao detail legacy-first fallback', () => {
         expect(detail.meeting).toBeNull();
     });
 });
+
+describe('doubao 2026-07/2026-08 selector coverage', () => {
+    function runConversationListScript(html) {
+        const dom = new JSDOM(html, { url: 'https://www.doubao.com/chat', runScripts: 'outside-only' });
+        return dom.window.eval(__test__.getConversationListScript());
+    }
+
+    it('composer locator covers the 2026-07 Semi textarea and the 2026-08 ProseMirror editor', () => {
+        const selectors = __test__.DOUBAO_COMPOSER_SELECTORS;
+        expect(selectors).toContain('textarea.semi-input-textarea');
+        expect(selectors).toContain('div.tiptap.ProseMirror');
+        expect(selectors[selectors.length - 1]).toBe('[contenteditable="true"]');
+    });
+
+    it('turns extraction keeps the 2026-07 list_items container', () => {
+        expect(__test__.getTurnsScript()).toContain('[class*="list_items"]');
+    });
+
+    it('conversation list resolves the 2026-07 sidebar without data-testid anchors', () => {
+        const items = runConversationListScript(`
+          <main>
+            <aside class="left-side-a1b2c3 w-sidebar-width">
+              <a href="/chat/11111111111111"><span>first</span></a>
+              <a href="/chat/22222222222222"><span>second</span></a>
+              <a href="/settings"><span>not a conversation</span></a>
+            </aside>
+          </main>`);
+        expect(items).toHaveLength(2);
+        expect(items[0]).toEqual({ id: '11111111111111', title: 'first', href: '/chat/11111111111111' });
+    });
+
+    it('conversation list returns empty when only the legacy data-testid sidebar exists', () => {
+        const items = runConversationListScript(`
+          <aside data-testid="flow_chat_sidebar">
+            <a data-testid="chat_list_thread_item" href="/chat/11111111111111"><span>old</span></a>
+          </aside>`);
+        expect(items).toEqual([]);
+    });
+});

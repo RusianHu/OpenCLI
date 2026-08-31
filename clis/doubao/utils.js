@@ -1227,9 +1227,11 @@ export const __test__ = {
     clickSendButtonScript,
     composerStateScript,
     detectDoubaoVerificationScript,
+    getConversationListScript,
     getTurnsScript,
     getTranscriptLinesScript,
     syntheticEnterSubmitScript,
+    DOUBAO_COMPOSER_SELECTORS,
 };
 export async function startNewDoubaoChat(page) {
     await ensureDoubaoChatPage(page);
