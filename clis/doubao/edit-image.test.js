@@ -17,6 +17,8 @@ function createPageMock() {
         pressKey: vi.fn().mockResolvedValue(undefined),
         nativeType: vi.fn().mockResolvedValue(undefined),
         nativeKeyPress: vi.fn().mockResolvedValue(undefined),
+        nativeClick: vi.fn().mockResolvedValue(undefined),
+        cdp: vi.fn().mockResolvedValue(undefined),
         getCookies: vi.fn().mockResolvedValue([]),
     };
 }
@@ -75,6 +77,15 @@ describe('edit-image result extraction script', () => {
         expect(result.fail).toBe(false);
     });
 
+    it('dedupes cross-host template variants and keeps the hi-res i_pre_wm one', () => {
+        const html = '<main><div class="list_items-root">'
+            + '<img src="https://p3-flow-imagex-sign.byteimg.com/tos-cn-i-x/rc_gen_image/koi.jpeg~tplv-x-ds_wm_1_6_dk.png?sig=1">'
+            + '<img src="https://p11-flow-imagex-sign.byteimg.com/tos-cn-i-x/rc_gen_image/koi.jpeg~tplv-x-i_pre_wm_16_dk.png?sig=2">'
+            + '</div></main>';
+        const result = runInDom(html, __test__.RESULT_SCRIPT);
+        expect(result.urls).toEqual(['https://p11-flow-imagex-sign.byteimg.com/tos-cn-i-x/rc_gen_image/koi.jpeg~tplv-x-i_pre_wm_16_dk.png?sig=2']);
+    });
+
     it('flags generation failure text from the conversation', () => {
         const result = runInDom(resultHtml('生成失败，请重试'), __test__.RESULT_SCRIPT);
         expect(result.fail).toBe(true);
@@ -127,7 +138,9 @@ describe('edit-image command flow', () => {
             .mockResolvedValueOnce('https://www.doubao.com/chat')
             .mockResolvedValueOnce('div.tiptap.ProseMirror')
             .mockResolvedValueOnce({ ok: true })
-            .mockResolvedValueOnce({ dispatched: true })
+            .mockResolvedValueOnce({ w: 1280, h: 800 })
+            .mockResolvedValueOnce({ x: 100, y: 100 })
+            .mockResolvedValueOnce(true)
             .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
             .mockResolvedValueOnce({ urls: [GEN_URL], busy: false, fail: false });
         const rows = await editImageCommand.func(page, { prompt: '画一只橘猫', out: outDir, timeout: 60 });
@@ -147,7 +160,9 @@ describe('edit-image command flow', () => {
             .mockResolvedValueOnce('div.tiptap.ProseMirror')
             .mockResolvedValueOnce(1)
             .mockResolvedValueOnce({ ok: true })
-            .mockResolvedValueOnce({ dispatched: true })
+            .mockResolvedValueOnce({ w: 1280, h: 800 })
+            .mockResolvedValueOnce({ x: 100, y: 100 })
+            .mockResolvedValueOnce(true)
             .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
             .mockResolvedValueOnce({ urls: [GEN_URL], busy: false, fail: false });
         const rows = await editImageCommand.func(page, { prompt: '把背景改成粉色', image: imagePath, out: outDir, timeout: 60 });
@@ -197,10 +212,29 @@ describe('edit-image command flow', () => {
             .mockResolvedValueOnce('https://www.doubao.com/chat')
             .mockResolvedValueOnce('div.tiptap.ProseMirror')
             .mockResolvedValueOnce({ ok: true })
-            .mockResolvedValueOnce({ dispatched: true })
             .mockResolvedValue(null);
         await expect(editImageCommand.func(page, { prompt: '画一只橘猫', out: outDir, timeout: 60 }))
             .rejects.toThrow(/not submitted/i);
+    });
+
+    it('re-clicks the send button with the native flavor when the composer did not clear', async () => {
+        prepare();
+        const page = createPageMock();
+        vi.mocked(page.evaluate)
+            .mockResolvedValueOnce('https://www.doubao.com/chat')
+            .mockResolvedValueOnce('div.tiptap.ProseMirror')
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ w: 1280, h: 800 })
+            .mockResolvedValueOnce({ x: 100, y: 100 })
+            .mockResolvedValueOnce(true)
+            .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 29 })
+            .mockResolvedValueOnce({ w: 1280, h: 800 })
+            .mockResolvedValueOnce({ x: 100, y: 100 })
+            .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
+            .mockResolvedValueOnce({ urls: [GEN_URL], busy: false, fail: false });
+        const rows = await editImageCommand.func(page, { prompt: '画一只橘猫', out: outDir, timeout: 60 });
+        expect(page.nativeClick).toHaveBeenCalledWith(100, 100);
+        expect(rows).toHaveLength(1);
     });
 
     it('surfaces a TimeoutError when Doubao reports a generation failure', async () => {
@@ -210,7 +244,9 @@ describe('edit-image command flow', () => {
             .mockResolvedValueOnce('https://www.doubao.com/chat')
             .mockResolvedValueOnce('div.tiptap.ProseMirror')
             .mockResolvedValueOnce({ ok: true })
-            .mockResolvedValueOnce({ dispatched: true })
+            .mockResolvedValueOnce({ w: 1280, h: 800 })
+            .mockResolvedValueOnce({ x: 100, y: 100 })
+            .mockResolvedValueOnce(true)
             .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
             .mockResolvedValueOnce({ urls: [], busy: false, fail: true })
             .mockResolvedValueOnce({ detected: false });
@@ -232,7 +268,9 @@ describe('edit-image command flow', () => {
             .mockResolvedValueOnce('https://www.doubao.com/chat')
             .mockResolvedValueOnce('div.tiptap.ProseMirror')
             .mockResolvedValueOnce({ ok: true })
-            .mockResolvedValueOnce({ dispatched: true })
+            .mockResolvedValueOnce({ w: 1280, h: 800 })
+            .mockResolvedValueOnce({ x: 100, y: 100 })
+            .mockResolvedValueOnce(true)
             .mockResolvedValueOnce({ conversationId: '123456789012', composerLength: 0 })
             .mockImplementation(async (script) => {
                 if (typeof script === 'string' && script.includes('rc_gen_image')) {
