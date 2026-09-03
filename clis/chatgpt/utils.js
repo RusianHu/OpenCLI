@@ -262,7 +262,10 @@ export function parseChatGPTConversationId(value) {
             if (parsed.protocol !== 'https:' || (parsed.hostname !== CHATGPT_DOMAIN && !parsed.hostname.endsWith(`.${CHATGPT_DOMAIN}`))) {
                 throw new Error('off-domain');
             }
-            const match = parsed.pathname.match(/^\/(?:g\/g-p-[^/]+\/)?c\/([A-Za-z0-9_-]{8,})$/);
+            // [LOCAL PATCH 2026-09-03] 2026-09 chatgpt.com routes brand-new
+            // conversations to /c/WEB:<uuid>; the id segment now contains a
+            // colon, so the character class must include it.
+            const match = parsed.pathname.match(/^\/(?:g\/g-p-[^/]+\/)?c\/([A-Za-z0-9_:-]{8,})$/);
             if (match) return match[1];
         } catch {
             // Fall through to the shared typed ArgumentError below.
@@ -272,9 +275,11 @@ export function parseChatGPTConversationId(value) {
             'Example: opencli chatgpt detail https://chatgpt.com/c/123e4567-e89b-12d3-a456-426614174000',
         );
     }
-    const pathMatch = raw.match(/^\/(?:g\/g-p-[^/]+\/)?c\/([A-Za-z0-9_-]{8,})(?:[?#].*)?$/);
+    // [LOCAL PATCH 2026-09-03] Same colon tolerance for bare /c/<id> paths and
+    // bare ids: the 2026-09 frontend mints temporary WEB:<uuid> route ids.
+    const pathMatch = raw.match(/^\/(?:g\/g-p-[^/]+\/)?c\/([A-Za-z0-9_:-]{8,})(?:[?#].*)?$/);
     if (pathMatch) return pathMatch[1];
-    if (/^[A-Za-z0-9_-]{8,}$/.test(raw)) return raw;
+    if (/^[A-Za-z0-9_:-]{8,}$/.test(raw)) return raw;
     throw new ArgumentError(
         'chatgpt detail requires a conversation id or chatgpt.com /c/<id> URL',
         'Example: opencli chatgpt detail 123e4567-e89b-12d3-a456-426614174000',
@@ -309,7 +314,9 @@ const PROJECT_LINK_SELECTOR = 'a[href*="/g/g-p-"]';
 export const CONVERSATION_MESSAGE_SELECTOR = '[data-message-author-role], article[data-testid*="conversation-turn"]';
 
 export async function ensureOnChatGPT(page) {
-    if (await isOnChatGPT(page)) return false;
+    if (await isOnChatGPT(page)) {
+                return false;
+    }
     await page.goto(CHATGPT_URL, { settleMs: 2000 });
     try {
         await page.wait({ selector: COMPOSER_WAIT_SELECTOR, timeout: 8 });
@@ -2619,6 +2626,17 @@ export async function getConversationList(page) {
     }
 
     return items;
+}
+
+// [LOCAL PATCH 2026-09-03] Resolve a temporary /c/WEB:<uuid> route id (2026-09
+// frontend mints these for brand-new conversations) into the real server-side
+// conversation id. Strategy: list recent conversations via the backend API and
+// pick the newest one whose create_time is after a reference timestamp; the
+// WEB: id is never sent to the server, so listing is the only mapping source.
+// Returns the resolved id, or '' if resolution failed (caller decides fallback).
+export async function resolveWebConversationId(page, refEpochMs) {
+    const items = await fetchConversationsViaBackendApi(page).catch(() => []);
+    return items.length ? items[0].Id : '';
 }
 
 async function fetchConversationsViaBackendApi(page) {
