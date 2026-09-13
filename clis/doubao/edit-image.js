@@ -115,6 +115,44 @@ const SUBMIT_STATE_SCRIPT = `
 const UPLOAD_STATE_SCRIPT = `
     (() => Array.from(document.querySelectorAll('input[type=file]')).filter((i) => i.files && i.files.length > 0).length)()`;
 
+const COMPOSER_PLUS_PROBE_SCRIPT = `
+    (() => {
+      const btns = Array.from(document.querySelectorAll('button, [role="button"]')).filter((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0 || r.top < window.innerHeight * 0.7) return false;
+        if ((el.innerText || '').trim()) return false;
+        return el.querySelector('svg') !== null;
+      });
+      const btn = btns[btns.length - 1];
+      if (!btn) return null;
+      const r = btn.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`;
+
+const FILE_INPUT_VISIBLE_SCRIPT = `
+    (() => {
+      const input = document.querySelector('input[type=file]');
+      return !!input && input.classList.contains('hidden') === false && input.offsetParent !== null;
+    })()`;
+
+// The composer file input is a Radix-menu input rendered with class="hidden"
+// until the composer "+" trigger opens its menu. Open that menu natively so
+// page.setFileInput's click + Page.fileChooserOpened interception can work.
+// Best effort: if the menu cannot be opened, setFileInput still runs and its
+// error surfaces to the caller.
+export async function openDoubaoComposerMenu(page) {
+    const alreadyVisible = await page.evaluate(FILE_INPUT_VISIBLE_SCRIPT).catch(() => false);
+    if (alreadyVisible) return;
+    const probe = await page.evaluate(COMPOSER_PLUS_PROBE_SCRIPT).catch(() => null);
+    if (!probe || typeof page.nativeClick !== 'function') return;
+    await page.nativeClick(probe.x, probe.y).catch(() => { });
+    for (let i = 0; i < 6; i++) {
+        await page.wait(0.4);
+        const visible = await page.evaluate(FILE_INPUT_VISIBLE_SCRIPT).catch(() => false);
+        if (visible) return;
+    }
+}
+
 const RESULT_SCRIPT = `
     (() => {
       const scope = document.querySelector('[class*="list_items"]') || document.body;
@@ -197,6 +235,12 @@ export const editImageCommand = cli({
 
         // 2. Edit mode: upload the source image
         if (hasImage) {
+            // 2026-09 UI: the composer file input is a Radix-menu input rendered
+            // with `class="hidden"` until the composer "+" trigger opens its menu.
+            // A display:none input cannot open a file chooser, so page.setFileInput
+            // (click + intercept Page.fileChooserOpened) times out. Open the menu
+            // with a native trusted CDP click first — synthetic events are ignored.
+            await openDoubaoComposerMenu(page);
             await page.setFileInput([imagePath], 'input[type=file]');
             let registered = 0;
             for (let i = 0; i < 5 && !registered; i++) {
