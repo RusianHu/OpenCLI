@@ -153,6 +153,55 @@ export async function openDoubaoComposerMenu(page) {
     }
 }
 
+// Doubao watermarks are applied by the Imagex CDN template, not baked into
+// pixels. The generation SSE stream carries every variant per image, including
+// `image.image_ori_raw.url` on the unmarked `image_raw` template with its own
+// server-side signature (the DOM/`lk3s` signature is bound to its template, so
+// rewriting the template suffix on a watermarked URL fails with 403). Wrap
+// JSON.parse to collect those raw URLs keyed by asset path while the run's
+// patches stream in; downloads then swap the watermarked URL for the raw one.
+// Idempotent: safe to re-install after a hard navigation (recoveries path).
+const RAW_IMAGE_HOOK_SCRIPT = `
+    (() => {
+      const w = window;
+      if (!w.__opencliRawImages) w.__opencliRawImages = {};
+      if (w.__opencliRawHookInstalled) return Object.keys(w.__opencliRawImages).length;
+      w.__opencliRawHookInstalled = true;
+      const collect = (obj, depth) => {
+        if (depth > 14 || !obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { for (const v of obj) collect(v, depth + 1); return; }
+        const raw = obj.image_ori_raw;
+        if (raw && typeof raw === 'object' && typeof raw.url === 'string') {
+          try { const u = new URL(raw.url); w.__opencliRawImages[u.pathname.split('~')[0]] = raw.url; } catch (e) { }
+        }
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          if (v && typeof v === 'object') collect(v, depth + 1);
+        }
+      };
+      const origParse = JSON.parse;
+      window.JSON.parse = function (...args) {
+        const result = origParse.apply(this, args);
+        try {
+          if (typeof args[0] === 'string' && args[0].includes('image_ori_raw')) collect(result, 0);
+        } catch (e) { /* noop */ }
+        return result;
+      };
+      return Object.keys(w.__opencliRawImages).length;
+    })()`;
+
+const RAW_IMAGE_SNAPSHOT_SCRIPT = `
+    (() => ({ ...window.__opencliRawImages }))()`;
+
+async function ensureRawImageHook(page) {
+    await page.evaluate(RAW_IMAGE_HOOK_SCRIPT).catch(() => { });
+}
+
+async function collectRawImages(page) {
+    const snapshot = await page.evaluate(RAW_IMAGE_SNAPSHOT_SCRIPT).catch(() => null);
+    return snapshot && typeof snapshot === 'object' ? snapshot : {};
+}
+
 const RESULT_SCRIPT = `
     (() => {
       const scope = document.querySelector('[class*="list_items"]') || document.body;
@@ -191,6 +240,7 @@ export const editImageCommand = cli({
         { name: 'image', required: false, help: 'Absolute path of an image file to edit; omit for text-to-image' },
         { name: 'out', required: false, help: 'Output directory (default: ~/Downloads/doubao-edit)' },
         { name: 'timeout', type: 'int', required: false, default: 180, help: 'Max seconds to wait for generation (min: 30)' },
+        { name: 'watermark', type: 'bool', required: false, default: false, help: 'Keep the watermarked CDN variant instead of the unmarked raw original' },
     ],
     columns: ['Index', 'ConversationId', 'SavedTo', 'Url'],
     func: async (page, kwargs) => {
@@ -198,6 +248,7 @@ export const editImageCommand = cli({
         const imageArg = String(kwargs.image || '').trim();
         const outDir = kwargs.out ? path.resolve(String(kwargs.out)) : path.join(os.homedir(), 'Downloads', 'doubao-edit');
         const timeout = kwargs.timeout;
+        const withWatermark = Boolean(kwargs.watermark);
         const hasImage = Boolean(imageArg);
         const imagePath = hasImage ? path.resolve(imageArg) : null;
         if (!prompt) {
@@ -224,6 +275,7 @@ export const editImageCommand = cli({
         // 1. Fresh conversation page
         await ensureDoubaoChatPage(page);
         await page.goto(DOUBAO_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
+        if (!withWatermark) await ensureRawImageHook(page);
         let composerSel = null;
         for (let i = 0; i < 12 && !composerSel; i++) {
             composerSel = await page.evaluate(COMPOSER_PROBE_SCRIPT).catch(() => null);
@@ -314,6 +366,7 @@ export const editImageCommand = cli({
             catch {
                 if (recoveries++ > 5) break;
                 await page.goto(conversationUrl, { waitUntil: 'load', settleMs: 2500 }).catch(() => {});
+                if (!withWatermark) await ensureRawImageHook(page);
                 await page.wait(1.5);
                 continue;
             }
@@ -339,11 +392,18 @@ export const editImageCommand = cli({
             throw new TimeoutError(failReason || `No generated image within ${timeout}s. Conversation: ${conversationUrl}`);
         }
 
-        // 6. Download results (signed CDN URL works outside the page)
+        // 6. Download results (signed CDN URL works outside the page).
+        //    Without --watermark, swap each watermarked URL for the unmarked
+        //    raw original captured from the generation stream (same asset,
+        //    server-signed image_raw template). Fall back to the watermarked
+        //    URL when the stream hook missed the asset.
         fs.mkdirSync(outDir, { recursive: true });
+        const rawImages = withWatermark ? {} : await collectRawImages(page);
         const rows = [];
         for (let n = 0; n < urls.length; n++) {
-            const url = urls[n];
+            let url = urls[n];
+            const assetKey = keyOf(url);
+            if (rawImages[assetKey]) url = rawImages[assetKey];
             const extMatch = url.match(/\.(png|jpe?g|webp)(?:\?|$)/);
             const ext = extMatch ? (extMatch[1] === 'jpeg' ? 'jpg' : extMatch[1]) : 'png';
             const filePath = path.join(outDir, `doubao_edit_${conversationId}_${n + 1}.${ext}`);
