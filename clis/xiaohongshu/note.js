@@ -7,8 +7,9 @@
  * Requires a full Xiaohongshu note URL with xsec_token.
  */
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { AuthRequiredError, CliError, EmptyResultError } from '@jackwener/opencli/errors';
+import { AuthRequiredError, EmptyResultError } from '@jackwener/opencli/errors';
 import { parseNoteId, buildNoteUrl } from './note-helpers.js';
+import { readXhsDetailPage } from './risk-control.js';
 /**
  * Host-agnostic IIFE that scrapes note title / author / counts / tags from a
  * rendered note detail page. Exported so the rednote adapter can reuse the
@@ -24,9 +25,24 @@ export const NOTE_EXTRACT_JS = `
 
         const clean = (el) => (el?.textContent || '').replace(/\\s+/g, ' ').trim()
 
-        const title = clean(document.querySelector('#detail-title, .title'))
-        const desc = clean(document.querySelector('#detail-desc, .desc, .note-text'))
-        const author = clean(document.querySelector('.username, .author-wrapper .name'))
+        // Scope the note's own fields to #noteContainer — the detail panel.
+        // The page also renders a recommendation feed next to the note, and
+        // every card in that feed carries a .title. querySelector returns the
+        // FIRST match in document order, so for a note that has no title of
+        // its own (#detail-title absent) the unscoped selector fell through to
+        // .title and reported an unrelated recommendation card's title as this
+        // note's title. Same class of bug as the .interact-container scoping
+        // below.
+        const scope = document.querySelector('#noteContainer')
+        const title = scope
+          ? clean(scope.querySelector('#detail-title, .title'))
+          : clean(document.querySelector('#detail-title'))
+        const desc = scope
+          ? clean(scope.querySelector('#detail-desc, .desc, .note-text'))
+          : clean(document.querySelector('#detail-desc, .note-text'))
+        const author = scope
+          ? clean(scope.querySelector('.username, .author-wrapper .name'))
+          : clean(document.querySelector('.username, .author-wrapper .name'))
         // Scope to .interact-container — the post's main interaction bar.
         // Without scoping, .like-wrapper / .chat-wrapper also match each
         // comment's like/reply buttons in the comment section, and
@@ -62,16 +78,18 @@ export const command = cli({
         const raw = String(kwargs['note-id']);
         const noteId = parseNoteId(raw);
         const url = buildNoteUrl(raw, { commandName: 'xiaohongshu note' });
-        await page.goto(url);
-        await page.wait({ time: 2 + Math.random() * 3 });
-        const data = await page.evaluate(NOTE_EXTRACT_JS);
+        // readXhsDetailPage paces the navigation and retries once through a
+        // cooldown if risk control soft-blocks the page (throws SECURITY_BLOCK
+        // when still blocked after the retry).
+        const data = await readXhsDetailPage(page, {
+            url,
+            extractJs: NOTE_EXTRACT_JS,
+            securityHelp: /^https?:\/\//.test(raw)
+                ? 'The page may be temporarily restricted. Try again later or from a different session.'
+                : 'Try using a full URL from search results (with xsec_token) instead of a bare note ID.',
+        });
         if (!data || typeof data !== 'object') {
             throw new EmptyResultError('xiaohongshu/note', 'Unexpected evaluate response');
-        }
-        if (data.securityBlock) {
-            throw new CliError('SECURITY_BLOCK', 'Xiaohongshu security block: the note detail page was blocked by risk control.', /^https?:\/\//.test(raw)
-                ? 'The page may be temporarily restricted. Try again later or from a different session.'
-                : 'Try using a full URL from search results (with xsec_token) instead of a bare note ID.');
         }
         if (data.loginWall) {
             throw new AuthRequiredError('www.xiaohongshu.com', 'Note content requires login');
@@ -83,8 +101,8 @@ export const command = cli({
         // XHS renders placeholder text like "赞"/"收藏"/"评论" when count is 0;
         // normalize to '0' unless the value looks numeric.
         const numOrZero = (v) => /^\d+/.test(v) ? v : '0';
-        // Title + author are always present on a real note page.
-        // If both are missing, the page likely failed to load properly.
+        // A note may legitimately have no title, but a real note page always
+        // renders an author. If both are missing, the page failed to load.
         if (!d.title && !d.author) {
             throw new EmptyResultError('xiaohongshu/note', 'The note page loaded without visible content. The note may be deleted or restricted.');
         }

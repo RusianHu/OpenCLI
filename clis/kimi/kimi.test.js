@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { getRegistry } from '@jackwener/opencli/registry';
 import { ArgumentError, CommandExecutionError, TimeoutError } from '@jackwener/opencli/errors';
-import { isKimiUrl, parseChatId } from './_utils.js';
+import { JSDOM } from 'jsdom';
+import { clickBySvgNameScript, isKimiUrl, parseChatId } from './_utils.js';
 import './chat.js';
 import './ui.js';
 import './storage.js';
@@ -49,45 +50,60 @@ describe('kimi adapter registration', () => {
 describe('kimi usage command', () => {
     const usageCommand = getRegistry().get('kimi/usage');
 
-    it('returns Kimi Code console usage cards as a single read row', async () => {
+    it('returns Kimi membership quota usage as a single read row', async () => {
         const page = makePage([{
-            '本周用量': ['12.5%', '3 天后重置'],
-            '频限明细': ['45%', '1 小时后重置'],
-            '我的权益': ['Kimi Pro', '会员权益'],
-            '模型权限': ['K2.6', '高级模型消耗 2x'],
+            membershipName: 'Kimi Pro',
+            membershipValidUntil: '2026-12-31',
+            totalUsagePct: '12.5%',
+            totalResetIn: '3 天后重置',
+            fiveHourUsagePct: '45%',
+            fiveHourResetIn: '1 小时后重置',
+            sevenDayUsagePct: '22%',
+            sevenDayResetIn: '4 天后重置',
+            giftUsagePct: '6.5%',
+            giftValidUntil: '2026-08-01',
+            balance: '¥12.30',
+            monthlySpend: '¥2.00 / ¥100',
         }]);
 
         await expect(usageCommand.func(page)).resolves.toEqual([{
-            weeklyUsagePct: 12.5,
-            weeklyResetIn: '3 天后重置',
-            rateLimitPct: 45,
-            rateLimitResetIn: '1 小时后重置',
             membershipName: 'Kimi Pro',
-            membershipTier: '会员权益',
-            modelPermission: 'K2.6',
-            modelCost: '高级模型消耗 2x',
+            membershipValidUntil: '2026-12-31',
+            totalUsagePct: 12.5,
+            totalResetIn: '3 天后重置',
+            fiveHourUsagePct: 45,
+            fiveHourResetIn: '1 小时后重置',
+            sevenDayUsagePct: 22,
+            sevenDayResetIn: '4 天后重置',
+            giftUsagePct: 6.5,
+            giftValidUntil: '2026-08-01',
+            balance: '¥12.30',
+            monthlySpend: '¥2.00 / ¥100',
         }]);
-        expect(page.goto).toHaveBeenCalledWith('https://www.kimi.com/code/console');
+        expect(page.goto).toHaveBeenCalledWith('https://www.kimi.com/membership/subscription?tab=quota');
     });
 
-    it('typed-fails when the usage console exposes no dashboard cards', async () => {
+    it('typed-fails when the membership quota page exposes no required usage sections', async () => {
         const page = makePage([{}]);
 
         await expect(usageCommand.func(page)).rejects.toBeInstanceOf(CommandExecutionError);
     });
 
-    it('typed-fails malformed usage payloads instead of returning null success rows', async () => {
+    it('typed-fails malformed membership quota payloads instead of returning null success rows', async () => {
         await expect(usageCommand.func(makePage([[]]))).rejects.toBeInstanceOf(CommandExecutionError);
         await expect(usageCommand.func(makePage([{
-            '本周用量': ['12%'],
-            '频限明细': ['45%'],
-            '我的权益': ['Kimi Pro'],
+            totalUsagePct: '12%',
+            totalResetIn: '3 天后重置',
+            fiveHourUsagePct: '45%',
+            fiveHourResetIn: '1 小时后重置',
         }]))).rejects.toBeInstanceOf(CommandExecutionError);
         await expect(usageCommand.func(makePage([{
-            '本周用量': ['not a percent'],
-            '频限明细': ['45%'],
-            '我的权益': ['Kimi Pro'],
-            '模型权限': ['K2.6'],
+            totalUsagePct: 'not a percent',
+            totalResetIn: '3 天后重置',
+            fiveHourUsagePct: '45%',
+            fiveHourResetIn: '1 小时后重置',
+            sevenDayUsagePct: '22%',
+            sevenDayResetIn: '4 天后重置',
         }]))).rejects.toBeInstanceOf(CommandExecutionError);
     });
 });
@@ -112,6 +128,61 @@ describe('kimi target boundary', () => {
         expect(isKimiUrl('http://www.kimi.com/')).toBe(false);
         expect(isKimiUrl('https://kimi.com.evil/chat/1234abcd')).toBe(false);
         expect(isKimiUrl('https://evil.example/?next=https://kimi.com/chat/1234abcd')).toBe(false);
+    });
+});
+
+describe('kimi svg click helper', () => {
+    function runClickScript(html) {
+        const dom = new JSDOM(`<!doctype html><body>${html}</body>`, { runScripts: 'outside-only' });
+        const { window } = dom;
+        if (!window.PointerEvent) window.PointerEvent = window.MouseEvent;
+        Object.defineProperty(window.Element.prototype, 'getBoundingClientRect', {
+            configurable: true,
+            value: () => ({ x: 0, y: 0, width: 20, height: 20, top: 0, left: 0, right: 20, bottom: 20 }),
+        });
+        const clicked = [];
+        window.document.querySelectorAll('[data-click-id]').forEach((el) => {
+            el.addEventListener('click', (event) => {
+                clicked.push({
+                    id: el.getAttribute('data-click-id'),
+                    targetId: event.target?.getAttribute?.('data-click-id') || '',
+                });
+            });
+        });
+
+        const result = window.eval(clickBySvgNameScript('Send'));
+        return { clicked, result };
+    }
+
+    it('falls back to the direct React parent when ancestors are generic wrappers', () => {
+        const { clicked, result } = runClickScript(`
+          <div data-click-id="wrapper">
+            <div data-click-id="owner">
+              <svg name="Send"></svg>
+            </div>
+          </div>
+        `);
+
+        expect(result).toMatchObject({ ok: true, targetTag: 'DIV' });
+        expect(clicked).toEqual([
+            { id: 'owner', targetId: 'owner' },
+            { id: 'wrapper', targetId: 'owner' },
+        ]);
+    });
+
+    it('uses a recognizable clickable grandparent instead of the generic direct parent', () => {
+        const { clicked, result } = runClickScript(`
+          <div class="send-button-container" data-click-id="button">
+            <div data-click-id="inner">
+              <svg name="Send"></svg>
+            </div>
+          </div>
+        `);
+
+        expect(result).toMatchObject({ ok: true, targetClass: 'send-button-container' });
+        expect(clicked).toEqual([
+            { id: 'button', targetId: 'button' },
+        ]);
     });
 });
 
@@ -169,6 +240,38 @@ describe('kimi write postconditions', () => {
         try {
             await expect(askCommand.func(page, { text: 'ping', timeout: 1 }))
                 .rejects.toBeInstanceOf(TimeoutError);
+        } finally {
+            nowSpy.mockRestore();
+        }
+    });
+
+    it('ask waits for generation to stop before returning stable assistant text', async () => {
+        const page = makePage([
+            'https://www.kimi.com/',
+            [],
+            'https://www.kimi.com/',
+            0,
+            { ok: true },
+            { ok: true },
+            true,
+            [{ role: 'Assistant', text: '思考中' }],
+            true,
+            [{ role: 'Assistant', text: '思考中' }],
+            true,
+            [{ role: 'Assistant', text: '思考中' }],
+            true,
+            [{ role: 'Assistant', text: '思考中' }],
+            false,
+        ]);
+        let now = 1_000;
+        const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
+            now += 200;
+            return now;
+        });
+        try {
+            const rows = await askCommand.func(page, { text: 'ping', timeout: 10 });
+            expect(rows[0].Status).toBe('reply-received');
+            expect(rows[0].ReplyPreview).toBe('思考中');
         } finally {
             nowSpy.mockRestore();
         }
