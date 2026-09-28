@@ -87,6 +87,14 @@ const COMPOSER_SELECTORS = [
     '[contenteditable="true"][role="textbox"]',
     '[aria-label="询问 ChatGPT"] [contenteditable="true"]',
     '[aria-label="Ask ChatGPT"] [contenteditable="true"]',
+    // [LOCAL PATCH 2026-09-28] 2026-09 chatgpt.com home composer can mount as a
+    // plain <textarea id="pending-home-input"> (no ProseMirror contenteditable)
+    // — observed in trace 20260928153747-b55c245f where the ProseMirror variant
+    // never hydrated and ask died with "no visible composer". fillChatGPTMessage
+    // already handles HTMLTextAreaElement, so listing it here is sufficient.
+    'textarea#pending-home-input',
+    'textarea[aria-label="询问 ChatGPT"]',
+    'textarea[aria-label="Ask ChatGPT"]',
     '[aria-label="Chat with ChatGPT"]',
     '[aria-label="与 ChatGPT 聊天"]',
     '[placeholder="Ask anything"]',
@@ -335,7 +343,8 @@ export async function isOnChatGPT(page) {
 // [LOCAL PATCH 2026-09-26] 2026-09 DOM: composer editable is a ProseMirror
 // [contenteditable][role=textbox] (often under aria-label "询问 ChatGPT");
 // #prompt-textarea / data-testid variants kept for older builds.
-const COMPOSER_WAIT_SELECTOR = '[contenteditable="true"][role="textbox"], #prompt-textarea, [data-testid="prompt-textarea"], [aria-label="询问 ChatGPT"], [aria-label="Chat with ChatGPT"]';
+// [LOCAL PATCH 2026-09-28] also accept the pending-home-input textarea variant.
+const COMPOSER_WAIT_SELECTOR = '[contenteditable="true"][role="textbox"], #prompt-textarea, [data-testid="prompt-textarea"], [aria-label="询问 ChatGPT"], [aria-label="Chat with ChatGPT"], textarea#pending-home-input, textarea[aria-label="Ask ChatGPT"]';
 const CONVERSATION_LINK_SELECTOR = 'a[href*="/c/"]';
 const PROJECT_LINK_SELECTOR = 'a[href*="/g/g-p-"]';
 // Selector used by detail.js to wait for at least one rendered message bubble
@@ -424,7 +433,15 @@ export async function ensureChatGPTLogin(page, message = 'ChatGPT requires a log
 }
 
 export async function ensureChatGPTComposer(page, message = 'ChatGPT composer is not available on the current page.') {
-    const state = await ensureChatGPTLogin(page, message);
+    // [LOCAL PATCH 2026-09-28] The 2026-09 home composer can take several
+    // seconds to mount (ProseMirror hydration or the pending-home-input
+    // textarea). Poll briefly instead of failing on the first snapshot.
+    let state = await ensureChatGPTLogin(page, message);
+    const deadline = Date.now() + 8000;
+    while (!state.hasComposer && Date.now() < deadline) {
+        await page.wait(1);
+        state = await getPageState(page);
+    }
     if (!state.hasComposer) {
         throw new CommandExecutionError(message);
     }
